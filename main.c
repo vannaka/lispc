@@ -125,6 +125,12 @@ lval_t* lval_sym(char* s) {
     return v;
 }
 
+void lval_add(lval_t* head, lval_t* chld) {
+    head->count++;
+    head->cell = realloc(head->cell, sizeof(lval_t*) * head->count);
+    head->cell[head->count-1] = chld;
+}
+
 lval_t* lval_sexpr(void) {
   lval_t* v = malloc(sizeof(lval_t));
   v->type = SExpression;
@@ -177,13 +183,25 @@ Result do_op( char* op, long l, long r) {
     return res;
 }
 
-Result evaluate(mpc_ast_t* a) {
+/**
+ * @brief Convert AST structure to S-Expression structure.
+ * 
+ * @param[in]   a 
+ * @return      Result
+ */
+Result ast_to_sexpr(mpc_ast_t* a) {
+    Result res;
+    lval_t* lval;
     long accum;
     char* op, *endptr;
-    Result res;
 
-    // Base case: number
-    if( strstr(a->tag, "number")) {
+    // New S-Expressiong
+    if (strstr(a->tag, ">") || strstr(a->tag, "sexpr")) {
+        lval = lval_sexpr();
+    }
+
+    // Number
+    else if (strstr(a->tag, "number")) {
         accum = strtol(a->contents, &endptr, 10);
 
         // NaN
@@ -203,31 +221,27 @@ Result evaluate(mpc_ast_t* a) {
         return res;
     }
 
-    // Get operator char. Will always be 2nd child
-    op = a->children[1]->contents;
-    
-    // Evaluate 1st operand
-    res = evaluate(a->children[2]);
-
-    if (isErr(&res)) return res;
-
-    accum = res.lval->num;
-
-    // Evaluate remaining opperands
-    for (int i = 3; i < a->children_num - 1; i++) {
-        res = evaluate(a->children[i]);
-        if (isErr(&res)) return res;
-
-        res = do_op(op, accum, res.lval->num);
-        if (isErr(&res)) return res;
-
-        accum = res.lval->num;
+    // Symbol
+    else if (strstr(a->tag, "symbol")) {
+        return Ok(lval_sym(a->contents));
     }
 
-    res.lval->num = accum;
+    else {
+        // Only S-Expressions should have children
+        assert(0 == a->children_num);
+    }
 
-    return res;
+    // Process s-expression's children
+    for (int i = 0; i < a->children_num; i++) {
+        res = ast_to_sexpr(a->children[i]);
+        if (isErr(&res)) return res;
+        
+        lval_add(lval, res.lval);
+    }
+
+    return Ok(lval);
 }
+
 
 int main(int argc, char** argv) {
     Result res;
@@ -264,14 +278,16 @@ int main(int argc, char** argv) {
         mpc_result_t r;
         if (mpc_parse("<stdin>", input, Lispy, &r)) {
             /* Success: Print the AST */
-            // mpc_ast_print(r.output);
+            mpc_ast_print(r.output);
 
-            res = evaluate(r.output);
-            if (isOk(&res)) {
-                printf("%li\n", res.lval->num);
-            } else {
-                fprintf(stderr, "Error: %s", res.err);
-            }
+            ast_to_sexpr(r.output);
+
+            // res = evaluate(r.output);
+            // if (isOk(&res)) {
+            //     printf("%li\n", res.lval->num);
+            // } else {
+            //     fprintf(stderr, "Error: %s", res.err);
+            // }
 
             mpc_ast_delete(r.output);
         } else {
