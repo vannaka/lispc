@@ -65,7 +65,7 @@ typedef struct lval_t
 
     // List of lval_t*
     lval_t** cell;
-    int count;
+    size_t count;
 } lval_t;
 
 enum ResultVariant {
@@ -87,6 +87,9 @@ typedef struct
 * FUNCTIONS
 ***************************************************************/
 
+/*--------------------------------------------------
+Result stuff
+--------------------------------------------------*/
 Result Ok(lval_t* lval) {
     Result res;
     res.variant = Result__Ok;
@@ -109,6 +112,13 @@ bool isErr(Result *res) {
 bool isOk(Result *res) {
     return res->variant == Result__Ok;
 }
+
+/*--------------------------------------------------
+LVal stuff
+--------------------------------------------------*/
+void lval_print(lval_t* v);
+Result lval_eval_sexpr(lval_t* v);
+
 
 lval_t* lval_num(long num) {
     lval_t* lval = malloc(sizeof(lval_t));
@@ -146,7 +156,7 @@ void lval_delete(lval_t* v) {
     case Symbol: free(v->sym); break;
     case SExpression:
         /* Delete all elements in list */
-        for (int i = 0; i < v->count; i++) {
+        for (size_t i = 0; i < v->count; i++) {
             lval_delete(v->cell[i]);
         }
         /* Delete list head */
@@ -159,26 +169,26 @@ void lval_delete(lval_t* v) {
     free(v);
 }
 
-Result do_op( char* op, long l, long r) {
+Result parse_number(char* str) {
+    long accum;
+    char* endptr;
     Result res;
-    
-    switch (*op)
-        {
-        case '+': res = Ok( lval_num(l + r) ); break;
-        case '-': res = Ok( lval_num(l - r) ); break;
-        case '*': res = Ok( lval_num(l * r) ); break;
-        case '/': {
-            // Check for div by zero
-            if (0 == r) {
-                res = Err("DivByZero");
-            } else {
-                res = Ok( lval_num(l / r) );
-            }
-            break;
-        }
-        default:
-            res = Err("BadOp");
-        }
+
+    accum = strtol(str, &endptr, 10);
+
+    // NaN
+    if (endptr == str) {
+        res = Err("BadNum_NaN");
+    } 
+    // Range
+    else if ( (accum == LONG_MAX || accum == LONG_MIN) 
+            && (ERANGE == errno                       ) ) {
+        res = Err("BadNum_Range");
+    } 
+    // OK
+    else {
+        res = Ok(lval_num(accum));
+    }
 
     return res;
 }
@@ -189,61 +199,256 @@ Result do_op( char* op, long l, long r) {
  * @param[in]   a 
  * @return      Result
  */
-Result ast_to_sexpr(mpc_ast_t* a) {
+Result ast_to_lval(mpc_ast_t* a) {
+    #define DONT_CARE "DONT_CARE"
+    static const Result signaling_error = {
+        .variant = Result__Err,
+        .err = DONT_CARE,
+    };
+
     Result res;
     lval_t* lval;
-    long accum;
-    char* op, *endptr;
 
-    // New S-Expressiong
-    if (strstr(a->tag, ">") || strstr(a->tag, "sexpr")) {
-        lval = lval_sexpr();
+    // Number or Symbol
+    if (strstr(a->tag, "number")) return parse_number(a->contents);
+    if (strstr(a->tag, "symbol")) return Ok(lval_sym(a->contents));
+
+    // Ignore all other nodes which aren't S-Expressions
+    if (NULL == strstr(a->tag, ">")) {
+        return signaling_error;
     }
-
-    // Number
-    else if (strstr(a->tag, "number")) {
-        accum = strtol(a->contents, &endptr, 10);
-
-        // NaN
-        if (endptr == a->contents) {
-            res = Err("BadNum_NaN");
-        } 
-        // Range
-        else if ( (accum == LONG_MAX || accum == LONG_MIN) 
-               && (ERANGE == errno                       ) ) {
-            res = Err("BadNum_Range");
-        } 
-        // OK
-        else {
-            res = Ok(lval_num(accum));
-        }
-
-        return res;
-    }
-
-    // Symbol
-    else if (strstr(a->tag, "symbol")) {
-        return Ok(lval_sym(a->contents));
-    }
-
-    else {
-        // Only S-Expressions should have children
-        assert(0 == a->children_num);
-    }
+    
+    lval = lval_sexpr();
 
     // Process s-expression's children
     for (int i = 0; i < a->children_num; i++) {
-        res = ast_to_sexpr(a->children[i]);
-        if (isErr(&res)) return res;
-        
+        res = ast_to_lval(a->children[i]);
+        if (isErr(&res)) {
+            if (strcmp(res.err, DONT_CARE) == 0) {
+                continue;
+            }
+            else {
+                /* Cleanup any alloc'd lvals on error */
+                lval_delete(lval);
+                return res;
+            }
+        }
+
         lval_add(lval, res.lval);
     }
 
     return Ok(lval);
+
+    #undef DONT_CARE
+}
+
+void lval_expr_print(lval_t* v, char l, char r) {
+    putchar(l);
+    
+    for (size_t i = 0; i < v->count; i++) {
+        lval_print(v->cell[i]);
+
+        if (i != v->count-1) 
+            putchar(' ');
+    }
+
+    putchar(r);
+}
+
+/**
+ * @brief Print S-Expression
+ * 
+ * @param sexpr
+ */
+void lval_print(lval_t* v) {
+    switch (v->type) {
+        case Number: printf("%li", v->num); break;
+        case Symbol: printf("%s", v->sym); break;
+        case SExpression: lval_expr_print(v, '(', ')'); break;
+    }
+}
+
+/**
+ * @brief Print S-Expression with a new line.
+ * 
+ * @param v 
+ */
+void lval_println(lval_t* v) {
+    lval_print(v);
+    putchar('\n');
+}
+
+/**
+ * @brief Print an error message and free the string.
+ * 
+ * @param e String to print then free.
+ */
+void err_print(char* e) {
+    fprintf(stderr, "Error: %s\n", e);
+    free(e);
 }
 
 
-int main(int argc, char** argv) {
+lval_t* lval_pop(lval_t* v, size_t i) {
+    lval_t* x;
+
+    assert(i <= v->count);
+
+    // Save off value at i
+    x = v->cell[i];
+
+    // Shift over cells to remove slot i.
+    memmove(&v->cell[i], &v->cell[i+1], sizeof(lval_t*) * (v->count-i-1));
+
+    v->count--;
+
+    v->cell = realloc(v->cell, sizeof(lval_t*) * v->count);
+    return x;
+}
+
+/**
+ * @brief Removes and returns an item from the S-Expression while freeing
+ *  memory for the rest of the S-Expression.
+ * 
+ * @param v 
+ * @param i 
+ * @return lval_t* 
+ */
+lval_t* lval_take(lval_t* v, size_t i) {
+    lval_t* x = lval_pop(v, i);
+    lval_delete(v);
+    return x;
+}
+
+
+/**
+ * @brief Performs operation and returns result.
+ *
+ * On error Err is returned. 
+ * 
+ * @param op 
+ * @param l 
+ * @param r 
+ * @return Result 
+ */
+Result builtin_op( lval_t* a, char* op ) {
+    Result res;
+    lval_t* v;
+    long accum;
+
+    /* Accumulate operands w/ given op */
+    for (size_t i = 0; i < a->count; i++ ) {
+        v = a->cell[i];
+
+        /* Validate operand */
+        if (Number != v->type) {
+            res = Err("Cannot operate on non-number!");
+            goto finish_op;
+        }
+
+        /* 1st operand only inits accumulator */
+        if (0 == i) {
+            accum = v->num;
+            continue;
+        }
+
+        if (strcmp(op, "+") == 0) {
+            accum += v->num;
+        }
+        else if (strcmp(op, "-") == 0) {
+            /* unary negation */
+            if (v->count == 1) 
+                accum = -accum;
+            /* normal subtraction */
+            else 
+                accum -= v->num;
+        }
+        else if (strcmp(op, "*") == 0) {
+            accum *= v->num;
+        }
+        else if (strcmp(op, "/") == 0) {
+            /* Check for div by zero */
+            if (0 == v->num) {
+                res = Err("DivByZero");
+                goto finish_op;
+            }
+            /* normal division */
+            else {
+                accum /= v->num; 
+            }
+        }
+        else {
+            res = Err("BadOp");
+            goto finish_op;
+        }
+    }
+
+    res = Ok(lval_num(accum));
+
+finish_op:
+    /* consume lval */
+    lval_delete(a);
+
+    return res;
+}
+
+/**
+ * @brief Evaluate an Expression
+ * 
+ * @param v 
+ * @return Result 
+ */
+
+Result lval_eval(lval_t* v) {
+    if (SExpression == v->type) 
+        return lval_eval_sexpr(v);
+    else
+        return Ok(v);
+}
+
+
+/**
+ * @brief Evaluate an S-Expression
+ * 
+ * @param v 
+ * @return Result 
+ */
+Result lval_eval_sexpr(lval_t* v) {
+    Result res;
+
+    /* Evaluate children */
+    for (size_t i = 0; i < v->count; i++) {
+        res = lval_eval(v->cell[i]);
+
+        if (isErr(&res)) {
+            return res;
+        }
+
+        v->cell[i] = res.lval;
+    }
+
+    /* Empty expression */
+    if (0 == v->count) return Ok(v);
+
+    /* Single expression */
+    if (1 == v->count) return Ok(lval_take(v, 0));
+
+    /* Ensure first entry is a symbol */
+    lval_t* f = lval_pop(v, 0);
+    if (Symbol != f->type) {
+        lval_delete(f);
+        lval_delete(v);
+        return Err("S-expression Does not start with symbol!");
+    }
+
+    /* Call builtin with operator */
+    res = builtin_op(v, f->sym);
+    lval_delete(f);
+    return res;
+}
+
+
+int main(void) {
     Result res;
 
     /* Setup grammer for Polish Notation */
@@ -278,16 +483,23 @@ int main(int argc, char** argv) {
         mpc_result_t r;
         if (mpc_parse("<stdin>", input, Lispy, &r)) {
             /* Success: Print the AST */
-            mpc_ast_print(r.output);
+            // mpc_ast_print(r.output);
 
-            ast_to_sexpr(r.output);
+            /* Parse AST */
+            res = ast_to_lval(r.output);
+            if (isErr(&res)) {
+                err_print(res.err);
+            } else {
+                // lval_println(res.lval);
 
-            // res = evaluate(r.output);
-            // if (isOk(&res)) {
-            //     printf("%li\n", res.lval->num);
-            // } else {
-            //     fprintf(stderr, "Error: %s", res.err);
-            // }
+                /* Evaluate expression */
+                res = lval_eval(res.lval);
+                if (isErr(&res)) {
+                    err_print(res.err);
+                } else {
+                    lval_println(res.lval);
+                }
+            }
 
             mpc_ast_delete(r.output);
         } else {
