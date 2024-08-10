@@ -44,6 +44,10 @@ void add_history(char* unused) {}
 #define stringify(s) #s
 #define cnt_of_array(a) sizeof((a))/sizeof((a)[0])
 
+#define LASSERT(args, cond, err) \
+  if (!(cond)) { lval_delete(args); return Err(err); }
+
+
 /***************************************************************
 * TYPES
 ***************************************************************/
@@ -51,7 +55,8 @@ void add_history(char* unused) {}
 enum lval_variant {
     Number,
     Symbol,
-    SExpression
+    SExpression,
+    QExpression
 };
 
 typedef struct lval_t lval_t;
@@ -87,6 +92,12 @@ typedef struct
 * FUNCTIONS
 ***************************************************************/
 
+void lval_print(lval_t* v);
+Result lval_eval( lval_t * v );
+Result lval_eval_sexpr(lval_t* v);
+Result lval_eval_qexpr( lval_t * v );
+
+
 /*--------------------------------------------------
 Result stuff
 --------------------------------------------------*/
@@ -114,11 +125,8 @@ bool isOk(Result *res) {
 }
 
 /*--------------------------------------------------
-LVal stuff
+lval_t constructors and destructors
 --------------------------------------------------*/
-void lval_print(lval_t* v);
-Result lval_eval_sexpr(lval_t* v);
-
 
 lval_t* lval_num(long num) {
     lval_t* lval = malloc(sizeof(lval_t));
@@ -135,10 +143,11 @@ lval_t* lval_sym(char* s) {
     return v;
 }
 
-void lval_add(lval_t* head, lval_t* chld) {
+lval_t* lval_add(lval_t* head, lval_t* chld) {
     head->count++;
     head->cell = realloc(head->cell, sizeof(lval_t*) * head->count);
     head->cell[head->count-1] = chld;
+    return head;
 }
 
 lval_t* lval_sexpr(void) {
@@ -149,12 +158,21 @@ lval_t* lval_sexpr(void) {
   return v;
 }
 
+lval_t* lval_qexpr(void) {
+  lval_t* v = malloc(sizeof(lval_t));
+  v->type = QExpression;
+  v->count = 0;
+  v->cell = NULL;
+  return v;
+}
+
 void lval_delete(lval_t* v) {
     switch (v->type)
     {
     case Number: /* Nothing to do */ break;
     case Symbol: free(v->sym); break;
-    case SExpression:
+    case SExpression: /* intentional fall-through */
+    case QExpression:
         /* Delete all elements in list */
         for (size_t i = 0; i < v->count; i++) {
             lval_delete(v->cell[i]);
@@ -168,6 +186,66 @@ void lval_delete(lval_t* v) {
     /* delete lval */
     free(v);
 }
+
+
+/*--------------------------------------------------
+Functions to print things
+--------------------------------------------------*/
+
+void lval_expr_print(lval_t* v, char l, char r) {
+    putchar(l);
+    
+    for (size_t i = 0; i < v->count; i++) {
+        lval_print(v->cell[i]);
+
+        if (i != v->count-1) 
+            putchar(' ');
+    }
+
+    putchar(r);
+}
+
+
+/**
+ * @brief Print S-Expression
+ * 
+ * @param sexpr
+ */
+void lval_print(lval_t* v) {
+    switch (v->type) {
+        case Number: printf("%li", v->num); break;
+        case Symbol: printf("%s", v->sym); break;
+        case SExpression: lval_expr_print(v, '(', ')'); break;
+        case QExpression: lval_expr_print(v, '{', '}'); break;
+    }
+}
+
+
+/**
+ * @brief Print S-Expression with a new line.
+ * 
+ * @param v 
+ */
+void lval_println(lval_t* v) {
+    lval_print(v);
+    putchar('\n');
+}
+
+
+/**
+ * @brief Print an error message and free the string.
+ * 
+ * @param e String to print then free.
+ */
+void err_print(char* e) {
+    fprintf(stderr, "Error: %s\n", e);
+    free(e);
+}
+
+
+/*--------------------------------------------------
+AST Parsing functions
+--------------------------------------------------*/
 
 Result parse_number(char* str) {
     long accum;
@@ -193,6 +271,7 @@ Result parse_number(char* str) {
     return res;
 }
 
+
 /**
  * @brief Convert AST structure to S-Expression structure.
  * 
@@ -200,7 +279,7 @@ Result parse_number(char* str) {
  * @return      Result
  */
 Result ast_to_lval(mpc_ast_t* a) {
-    #define DONT_CARE "DONT_CARE"
+    #define DONT_CARE "!!INTERNAL_SIGNALING_ERROR!!"
     static const Result signaling_error = {
         .variant = Result__Err,
         .err = DONT_CARE,
@@ -218,7 +297,11 @@ Result ast_to_lval(mpc_ast_t* a) {
         return signaling_error;
     }
     
-    lval = lval_sexpr();
+    if (strstr(a->tag, "qexpr")) {
+        lval = lval_qexpr();
+    } else {
+        lval = lval_sexpr();
+    }
 
     // Process s-expression's children
     for (int i = 0; i < a->children_num; i++) {
@@ -242,53 +325,18 @@ Result ast_to_lval(mpc_ast_t* a) {
     #undef DONT_CARE
 }
 
-void lval_expr_print(lval_t* v, char l, char r) {
-    putchar(l);
-    
-    for (size_t i = 0; i < v->count; i++) {
-        lval_print(v->cell[i]);
 
-        if (i != v->count-1) 
-            putchar(' ');
-    }
-
-    putchar(r);
-}
+/*--------------------------------------------------
+Evaluation functions
+--------------------------------------------------*/
 
 /**
- * @brief Print S-Expression
- * 
- * @param sexpr
- */
-void lval_print(lval_t* v) {
-    switch (v->type) {
-        case Number: printf("%li", v->num); break;
-        case Symbol: printf("%s", v->sym); break;
-        case SExpression: lval_expr_print(v, '(', ')'); break;
-    }
-}
-
-/**
- * @brief Print S-Expression with a new line.
+ * @brief Removes and returns an item from the S-Expression.
  * 
  * @param v 
+ * @param i 
+ * @return lval_t* 
  */
-void lval_println(lval_t* v) {
-    lval_print(v);
-    putchar('\n');
-}
-
-/**
- * @brief Print an error message and free the string.
- * 
- * @param e String to print then free.
- */
-void err_print(char* e) {
-    fprintf(stderr, "Error: %s\n", e);
-    free(e);
-}
-
-
 lval_t* lval_pop(lval_t* v, size_t i) {
     lval_t* x;
 
@@ -307,8 +355,8 @@ lval_t* lval_pop(lval_t* v, size_t i) {
 }
 
 /**
- * @brief Removes and returns an item from the S-Expression while freeing
- *  memory for the rest of the S-Expression.
+ * @brief Removes and returns an item from the S-Expression and
+ *  deletes the rest of the S-Expression.
  * 
  * @param v 
  * @param i 
@@ -322,7 +370,26 @@ lval_t* lval_take(lval_t* v, size_t i) {
 
 
 /**
- * @brief Performs operation and returns result.
+ * @brief Takes the children from y and appends them to x, then
+ *  deletes y.
+ * 
+ * @param x 
+ * @param y 
+ * @return lval_t* 
+ */
+lval_t* lval_join(lval_t* x, lval_t* y) {
+    while (y->count) {
+        x = lval_add(x, lval_pop(y, 0));
+    }
+
+    lval_delete(y);
+    return x;
+}
+
+
+/**
+ * @brief Performs operation on S-Expression and return result. The given
+ *  lval_t is consumed.
  *
  * On error Err is returned. 
  * 
@@ -390,7 +457,133 @@ finish_op:
     lval_delete(a);
 
     return res;
+} /* builtin_op() */
+
+
+/**
+ * @brief Takes a Q-Expression and returns a Q-Expression with
+ *  only the first element. Consumes the given lval.
+ * 
+ * @param a Argument to 'head'.
+ * @return Result
+ */
+Result builtin_head(lval_t* a) {
+    lval_t* v;
+
+    LASSERT(a, 1 == a->count,
+        "Function 'head' passed too many arguments!");
+    LASSERT(a, QExpression == a->cell[0]->type,
+        "Argument to 'head' is not a Q-Expression!");
+    LASSERT(a, 0 != a->cell[0]->count,
+        "List passed to 'head' is empty!");
+
+    v = lval_take(a, 0);
+    while (v->count > 1) { lval_delete(lval_pop(v, 1)); }
+    
+    return Ok(v);
+} /* builtin_head() */
+
+
+/**
+ * @brief Takes a Q-Expression and returns a Q-Expression with
+ *  the first element removed.
+ * 
+ * @param a Argument to 'tail'
+ * @return Result
+ */
+Result builtin_tail(lval_t* a) {
+    lval_t* v;
+
+    LASSERT(a, 1 == a->count,
+        "Function 'tail' passed too many arguments!");
+    LASSERT(a, QExpression == a->cell[0]->type,
+        "Function 'tail' passed incorrect type!");
+    LASSERT(a, 0 != a->cell[0]->count,
+        "Function 'tail' passed empty list!");
+
+    v = lval_take(a, 0);
+    lval_delete(lval_pop(v, 0));
+    
+    return Ok(v);
+} /* builtin_tail() */
+
+
+/**
+ * @brief Converts a given S-Expression to a Q-Expression
+ * 
+ * @param v Argument to 'list'.
+ * @return Result 
+ */
+Result builtin_list(lval_t* a) {
+    a->type = QExpression;
+    return Ok(a);
 }
+
+
+/**
+ * @brief Takes a Q-Expression and evaluates it as if it were
+ *  an S-Expression.
+ * 
+ * @param a Argument to 'eval'
+ * @return Result 
+ */
+Result builtin_eval(lval_t* a) {
+    lval_t* v;
+
+    LASSERT(a, 1 == a->count,
+        "Function 'eval' passed too many arguments!");
+    LASSERT(a, QExpression == a->cell[0]->type,
+        "Function 'eval' passed incorrect type!");
+
+    v = lval_take(a, 0);
+    v->type = SExpression;
+    return lval_eval(v);
+
+} /* builtin_eval() */
+
+
+/**
+ * @brief Take one or more Q-Expressions and join them together.
+ * 
+ * @param a Arguments to 'join'
+ * @return Result
+ */
+Result builtin_join(lval_t* a) {
+    /* Validate argument types */
+    for (size_t i = 0; i < a->count; i++) {
+        LASSERT(a, QExpression == a->cell[0]->type,
+            "Function 'join' passed incorretct type.");
+    }
+
+    /* grab the 1st argument */
+    lval_t* x = lval_pop(a, 0);
+
+    /* append every other argument's contents to the first */
+    while (a->count) {
+        x = lval_join(x, lval_pop(a, 0));
+    }
+
+    lval_delete(a);
+    return Ok(x);
+}
+
+
+Result builtin(lval_t* a, char* func) {
+    Result res;
+
+    if      (strcmp("list", func) == 0) { res = builtin_list(a);     }
+    else if (strcmp("head", func) == 0) { res = builtin_head(a);     }
+    else if (strcmp("tail", func) == 0) { res = builtin_tail(a);     }
+    else if (strcmp("join", func) == 0) { res = builtin_join(a);     }
+    else if (strcmp("eval", func) == 0) { res = builtin_eval(a);     }
+    else if (strstr("+-/*", func)     ) { res = builtin_op(a, func); }
+    else {
+        res = Err("BadOp");
+    }
+
+    return res;
+}
+
 
 /**
  * @brief Evaluate an Expression
@@ -404,7 +597,7 @@ Result lval_eval(lval_t* v) {
         return lval_eval_sexpr(v);
     else
         return Ok(v);
-}
+} /* lval_eval() */
 
 
 /**
@@ -421,6 +614,7 @@ Result lval_eval_sexpr(lval_t* v) {
         res = lval_eval(v->cell[i]);
 
         if (isErr(&res)) {
+            lval_take(v, i);
             return res;
         }
 
@@ -442,10 +636,10 @@ Result lval_eval_sexpr(lval_t* v) {
     }
 
     /* Call builtin with operator */
-    res = builtin_op(v, f->sym);
+    res = builtin(v, f->sym);
     lval_delete(f);
     return res;
-}
+} /* lval_eval_sexpr() */
 
 
 int main(void) {
@@ -455,18 +649,22 @@ int main(void) {
     mpc_parser_t* Number = mpc_new("number");
     mpc_parser_t* Symbol = mpc_new("symbol");
     mpc_parser_t* Sexpr  = mpc_new("sexpr");
+    mpc_parser_t* Qexpr  = mpc_new("qexpr");
     mpc_parser_t* Expr   = mpc_new("expr");
     mpc_parser_t* Lispy  = mpc_new("lispy");
 
     mpca_lang(MPCA_LANG_DEFAULT,
-        "                                        \
-        number : /-?[0-9]+/ ;                    \
-        symbol : '+' | '-' | '*' | '/' ;         \
-        sexpr  : '(' <expr>* ')' ;               \
-        expr   : <number> | <symbol> | <sexpr> ; \
-        lispy  : /^/ <expr>* /$/ ;               \
+        "                                                  \
+        number : /-?[0-9]+/ ;                              \
+        symbol : \"list\" | \"head\" | \"tail\"            \
+               | \"join\" | \"eval\"                       \
+               | '+' | '-' | '*' | '/' ;                   \
+        sexpr  : '(' <expr>* ')' ;                         \
+        qexpr  : '{' <expr>* '}' ;                         \
+        expr   : <number> | <symbol> | <sexpr> | <qexpr> ; \
+        lispy  : /^/ <expr>* /$/ ;                         \
         ",
-    Number, Symbol, Sexpr, Expr, Lispy);
+    Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
 
     /* Print Version and Exit Information */
     puts("Lispy Version 0.0.0.0.1");
@@ -498,6 +696,7 @@ int main(void) {
                     err_print(res.err);
                 } else {
                     lval_println(res.lval);
+                    lval_delete(res.lval);
                 }
             }
 
@@ -513,7 +712,7 @@ int main(void) {
     }
 
     /* cleanup */
-    mpc_cleanup(5, Number, Symbol, Sexpr, Expr, Lispy);
+    mpc_cleanup(6, Number, Symbol, Sexpr, Qexpr, Expr, Lispy);
 
     return 0;
 }
