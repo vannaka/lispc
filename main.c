@@ -52,6 +52,19 @@ void add_history(char* unused) {}
         return res;                                 \
     }
 
+#define LASSERT_TYPE(name, args, num, t)                                \
+    LASSERT(a, t == a->cell[(num)]->type,                               \
+        "Function '" name "' passed incorrect type for argument %d. "   \
+        "Got %s, Expected %s.",                                         \
+        (num),                                                          \
+        str_type(a->cell[(num)]->type),                                 \
+        str_type((t)));
+
+#define LASSERT_NUM(name, a, exp_num)                                   \
+    LASSERT(a, (exp_num) == (a)->count,                                 \
+        "Func '" name "' passed too many arguments. Act: %d, Exp: %d",  \
+        (a)->count, (exp_num));
+
 
 /***************************************************************
 * TYPES
@@ -99,7 +112,12 @@ struct lval_t
     union {
         long num;
         char* sym;
-        lbuiltin* func;
+        struct {
+            lbuiltin* builtin;
+            lenv_t* env;
+            lval_t* formals;
+            lval_t* body;
+        } func;
     };
 
     // List of lval_t*
@@ -112,6 +130,7 @@ struct lenv_t {
     size_t count;
     char** syms;
     lval_t** vals;
+    lenv_t* par;
 };
 
 
@@ -122,6 +141,11 @@ struct lenv_t {
 void lval_print(lval_t* v);
 Result lval_eval(lenv_t* e, lval_t * v );
 Result lval_eval_sexpr(lenv_t* e, lval_t* v);
+lenv_t* lenv_new(void);
+void lenv_del(lenv_t* e);
+Result lenv_get(lenv_t* e, lval_t* v);
+void lenv_put(lenv_t* e, lval_t* k, lval_t* v);
+lenv_t* lenv_copy(lenv_t* e);
 
 
 /*--------------------------------------------------
@@ -187,7 +211,17 @@ lval_t* lval_sym(char* s) {
 lval_t* lval_func(lbuiltin* func) {
     lval_t* v = malloc(sizeof(lval_t));
     v->type = Func;
-    v->func = func;
+    v->func.builtin = func;
+    return v;
+}
+
+lval_t* lval_lamda(lval_t* formals, lval_t* body) {
+    lval_t* v = malloc(sizeof(lval_t));
+    v->type = Func;
+    v->func.builtin = NULL;
+    v->func.env = lenv_new();
+    v->func.formals = formals;
+    v->func.body = body;
     return v;
 }
 
@@ -219,7 +253,14 @@ void lval_delete(lval_t* v) {
     {
     case Number: /* Nothing to do */ break;
     case Symbol: free(v->sym); break;
-    case Func: /* Nothing to do */ break;
+    case Func:
+        /* Clean up user defined function */
+        if (!v->func.builtin) {
+            lenv_del(v->func.env);
+            lval_delete(v->func.formals);
+            lval_delete(v->func.body);
+        }
+        break;
     case SExpression: /* intentional fall-through */
     case QExpression:
         /* Delete all elements in list */
@@ -243,7 +284,18 @@ lval_t* lval_copy(lval_t* v) {
     switch (v->type)
     {
     /* Direct copies */
-    case Func: x->func = v->func; break;
+    case Func:
+        if (v->func.builtin) {
+            x->func.builtin = v->func.builtin;
+        }
+        else {
+            x->func.builtin = NULL;
+            x->func.env = lenv_copy(v->func.env);
+            x->func.formals = lval_copy(v->func.formals);
+            x->func.body = lval_copy(v->func.body);
+        }
+        
+        break;
     case Number: x->num = v->num; break;
 
     /* String copies */
@@ -288,6 +340,7 @@ lenv_t* lenv_new(void) {
     e->count = 0;
     e->syms = NULL;
     e->vals = NULL;
+    e->par  = NULL;
     return e;
 }
 
@@ -311,8 +364,14 @@ Result lenv_get(lenv_t* e, lval_t* v) {
         }
     }
 
+    /* Search parent environment */
+    if (e->par) {
+        return lenv_get(e->par, v);
+    }
+
     return printErr("unbounded symbol: %s", v->sym);
 }
+
 
 /**
  * @brief Add a value for the given key to the given environment.
@@ -344,6 +403,40 @@ void lenv_put(lenv_t* e, lval_t* k, lval_t* v) {
 }
 
 
+/**
+ * @brief Add a value for the given key to the global environment of
+ *  the given environment.
+ * 
+ * @param e Environment
+ * @param k Key
+ * @param v Value
+ */
+void lenv_def(lenv_t* e, lval_t* k, lval_t* v) {
+    /* Iterate till e has no parent */
+    while (e->par) { e = e->par; }
+    /* Put value in e */
+    lenv_put(e, k, v);
+}
+
+
+void lenv_copy2(lenv_t* dst, lenv_t* src) {
+    lval_t s;
+
+    for (size_t i = 0; i < src->count; i++) {
+        s.sym = src->syms[i];
+        lenv_put(dst, &s, src->vals[i]);
+    }
+
+    dst->par = src->par;
+}
+
+lenv_t* lenv_copy(lenv_t* e) {
+    lenv_t* n_env = lenv_new();
+    lenv_copy2(n_env, e);
+    return n_env;
+}
+
+
 /*--------------------------------------------------
 Functions to print things
 --------------------------------------------------*/
@@ -371,7 +464,19 @@ void lval_print(lval_t* v) {
     switch (v->type) {
         case Number: printf("%li", v->num); break;
         case Symbol: printf("%s", v->sym); break;
-        case Func: printf("<function>"); break;
+        case Func: 
+            if (v->func.builtin) {
+                printf("<builtin>");
+            }
+            else {
+                printf("(\\ "); 
+                lval_print(v->func.formals);
+                putchar(' ');
+                lval_print(v->func.body);
+                printf(" )");
+            }
+            break;
+        
         case SExpression: lval_expr_print(v, '(', ')'); break;
         case QExpression: lval_expr_print(v, '{', '}'); break;
     }
@@ -651,12 +756,8 @@ Result builtin_head(lenv_t* e, lval_t* a) {
     UNUSED(e);
     lval_t* v;
 
-    LASSERT(a, 1 == a->count,
-        "Func 'head' passed too many arguments. Act: %d, Exp: %d", a->count, 1);
-    LASSERT(a, QExpression == a->cell[0]->type,
-        "Function 'head' passed incorrect type for argument 0. "
-        "Got %s, Expected %s.",
-        str_type(a->cell[0]->type), str_type(QExpression));
+    LASSERT_NUM("head", a, 1);
+    LASSERT_TYPE("head", a, 0, QExpression);
     LASSERT(a, 0 != a->cell[0]->count,
         "List passed to 'head' is empty!");
 
@@ -678,12 +779,8 @@ Result builtin_tail(lenv_t* e, lval_t* a) {
     UNUSED(e);
     lval_t* v;
 
-    LASSERT(a, 1 == a->count,
-        "Func 'tail' passed too many arguments. Act: %d, Exp: %d", a->count, 1);
-    LASSERT(a, QExpression == a->cell[0]->type,
-        "Function 'tail' passed incorrect type for argument 0. "
-        "Got %s, Expected %s.",
-        str_type(a->cell[0]->type), str_type(QExpression));
+    LASSERT_NUM("tail", a, 1);
+    LASSERT_TYPE("tail", a, 0, QExpression);
     LASSERT(a, 0 != a->cell[0]->count,
         "Func 'tail' passed empty list!");
 
@@ -717,12 +814,8 @@ Result builtin_list(lenv_t* e, lval_t* a) {
 Result builtin_eval(lenv_t* e, lval_t* a) {
     lval_t* v;
 
-    LASSERT(a, 1 == a->count,
-        "Func 'eval' passed too many arguments. Act: %d, Exp: %d", a->count, 1);
-    LASSERT(a, QExpression == a->cell[0]->type,
-        "Function 'eval' passed incorrect type for argument 0. "
-        "Got %s, Expected %s.",
-        str_type(a->cell[0]->type), str_type(QExpression));
+    LASSERT_NUM("eval", a, 1);
+    LASSERT_TYPE("eval", a, 0, QExpression);
 
     v = lval_take(a, 0);
     v->type = SExpression;
@@ -742,10 +835,7 @@ Result builtin_join(lenv_t* e, lval_t* a) {
 
     /* Validate argument types */
     for (size_t i = 0; i < a->count; i++) {
-        LASSERT(a, QExpression == a->cell[i]->type,
-            "Function 'join' passed incorrect type for argument %i. "
-            "Got %s, Expected %s.",
-            i, str_type(a->cell[i]->type), str_type(QExpression));
+        LASSERT_TYPE("join", a, i, QExpression);
     }
 
     /* grab the 1st argument */
@@ -760,32 +850,73 @@ Result builtin_join(lenv_t* e, lval_t* a) {
     return Ok(x);
 }
 
-Result builtin_def(lenv_t* e, lval_t* a) {
-    LASSERT(a, QExpression == a->cell[0]->type,
-        "Function 'def' passed incorrect type for argument 0. "
-        "Got %s, Expected %s.",
-        str_type(a->cell[0]->type), str_type(QExpression));
+
+Result builtin_var(lenv_t* e, lval_t* a, char* func) {
+    LASSERT_TYPE("func", a, 0, QExpression);
 
     /* 1st arg is symbol list, remaining are values */
     lval_t* syms = a->cell[0];
 
     /* Validate all list elements are symbols */
     for (size_t i = 0; i < syms->count; i++) {
-        LASSERT(a, syms->cell[i]->type == Symbol, "Function 'def' cannot define non-symbol");
+        LASSERT(a, syms->cell[i]->type == Symbol, 
+            "Function '%s' cannot define non-symbol. "
+            "Act: %s, Exp: %s",
+            str_type(syms->cell[i]->type), str_type(Symbol),
+            func);
     }
 
     /* Number of symbols must eq number of values */
     LASSERT(a, syms->count == a->count-1,
-        "Function 'def', the number of symbols (%d) does not match the number of values (%d).", 
+        "Function '%s', the number of symbols (%d) does not match the number of values (%d).",
+        func,
         syms->count, a->count-1);
 
-    /* Assign k:v pairs to the environment */
+    /* Assign k:v pairs to the apropriate environment */
     for (size_t i = 0; i < syms->count; i++) {
-        lenv_put(e, syms->cell[i], a->cell[1+i]);
+        if (0 == strcmp(func, "def")) {
+            lenv_def(e, syms->cell[i], a->cell[1+i]);
+        }
+
+        if (0 == strcmp(func, "=")) {
+            lenv_put(e, syms->cell[i], a->cell[1+i]);
+        }
     }
 
     lval_delete(a);
     return Ok(lval_sexpr());
+}
+
+Result builtin_def(lenv_t* e, lval_t* a) {
+    return builtin_var(e, a, "def");
+}
+
+Result builtin_put(lenv_t* e, lval_t* a) {
+    return builtin_var(e, a, "=");
+}
+
+Result builtin_lambda(lenv_t* e, lval_t* a) {
+    UNUSED(e);
+
+    /* Two args, each are Q-expressions */
+    LASSERT_NUM("\\", a, 2);
+    LASSERT_TYPE("\\", a, 0, QExpression);
+    LASSERT_TYPE("\\", a, 1, QExpression);
+
+    /* Check first arg contains only symbols */
+    for (size_t i = 0; i < a->cell[0]->count; i++) {
+        LASSERT(a, Symbol == a->cell[0]->cell[i]->type,
+            "Cannot define non-symbol. Act: %s, Exp: %s",
+            str_type(a->cell[i]->cell[i]->type), str_type(Symbol));
+    }
+
+    lval_t* formals = lval_pop(a, 0);
+    lval_t* body = lval_pop(a, 0);
+
+    /* consume lval */
+    lval_delete(a);
+
+    return Ok(lval_lamda(formals, body));
 }
 
 
@@ -812,7 +943,55 @@ void lenv_add_builtins(lenv_t* e) {
     lenv_add_builtin(e, "/", builtin_div);
 
     /* Variable Functions */
-    lenv_add_builtin(e, "def",  builtin_def);
+    lenv_add_builtin(e, "def", builtin_def);
+    lenv_add_builtin(e, "=",   builtin_put);
+    lenv_add_builtin(e, "\\",  builtin_lambda);
+}
+
+Result lval_call(lenv_t* e, lval_t* f, lval_t* a) {
+
+    /* Call builtin functions directly */
+    if (f->func.builtin) {
+        return f->func.builtin(e, a);
+    }
+
+    /* Check # of formals eq # of arguments */
+    LASSERT(a, f->func.formals->count >= a->count,
+        "Lambda passed too many (%d) arguments, maximum: %d.",
+        a->count, f->func.formals->count);
+
+
+    /* Process Arguments */
+    while (a->count) {
+        /* Pop arg name and arg value */
+        lval_t* sym = lval_pop(f->func.formals, 0);
+        lval_t* val = lval_pop(a, 0);
+
+        /* Place in local environment */
+        lenv_put(f->func.env, sym, val);
+
+        /* cleanup */
+        lval_delete(sym);
+        lval_delete(val);
+    }
+
+    /* Cleanup arg list */
+    lval_delete(a);
+
+    /* Evaluate if all formals were bound */
+    if (0 == f->func.formals->count) {
+        /* Set Parent environment */
+        f->func.env->par = e;
+
+        /* Evaluate body */
+        return builtin_eval(
+                    f->func.env, 
+                    lval_add(lval_sexpr(), lval_copy(f->func.body)));
+    }
+    /* Otherwise, return partialy evaluated function */ 
+    else {
+        return Ok(lval_copy(f));
+    }
 }
 
 
@@ -875,7 +1054,8 @@ Result lval_eval_sexpr(lenv_t* e, lval_t* v) {
     }
 
     /* Call function */
-    res = f->func(e, v);
+    res = lval_call(e, f, v);
+
     lval_delete(f);
     return res;
 } /* lval_eval_sexpr() */
