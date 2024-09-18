@@ -48,7 +48,7 @@ void add_history(char* unused) {}
 #define LASSERT(args, cond, fmt, ...)               \
     if (!(cond)) {                                  \
         Result res = printErr(fmt, ##__VA_ARGS__);  \
-        lval_delete(args);                          \
+        lval_del(args);                          \
         return res;                                 \
     }
 
@@ -248,7 +248,7 @@ lval_t* lval_qexpr(void) {
   return v;
 }
 
-void lval_delete(lval_t* v) {
+void lval_del(lval_t* v) {
     switch (v->type)
     {
     case Number: /* Nothing to do */ break;
@@ -257,15 +257,15 @@ void lval_delete(lval_t* v) {
         /* Clean up user defined function */
         if (!v->func.builtin) {
             lenv_del(v->func.env);
-            lval_delete(v->func.formals);
-            lval_delete(v->func.body);
+            lval_del(v->func.formals);
+            lval_del(v->func.body);
         }
         break;
     case SExpression: /* intentional fall-through */
     case QExpression:
         /* Delete all elements in list */
         for (size_t i = 0; i < v->count; i++) {
-            lval_delete(v->cell[i]);
+            lval_del(v->cell[i]);
         }
         /* Delete list head */
         free(v->cell);
@@ -347,7 +347,7 @@ lenv_t* lenv_new(void) {
 void lenv_del(lenv_t* e) {
     for (size_t i = 0; i < e->count; i++) {
         free(e->syms[i]);
-        lval_delete(e->vals[i]);
+        lval_del(e->vals[i]);
     }
 
     free(e->syms);
@@ -384,7 +384,7 @@ void lenv_put(lenv_t* e, lval_t* k, lval_t* v) {
     /* Replace existing variable with new one */
     for (size_t i = 0; i < e->count; i++) {
         if(0 == strcmp(e->syms[i], k->sym)) {
-            lval_delete(e->vals[i]);
+            lval_del(e->vals[i]);
             e->vals[i] = lval_copy(v);
             return;
         }
@@ -574,7 +574,7 @@ Result ast_to_lval(mpc_ast_t* a) {
             }
             else {
                 /* Cleanup any alloc'd lvals on error */
-                lval_delete(lval);
+                lval_del(lval);
                 return res;
             }
         }
@@ -602,7 +602,7 @@ Evaluation functions
 lval_t* lval_pop(lval_t* v, size_t i) {
     lval_t* x;
 
-    assert(i <= v->count);
+    assert(i < v->count);
 
     // Save off value at i
     x = v->cell[i];
@@ -626,7 +626,7 @@ lval_t* lval_pop(lval_t* v, size_t i) {
  */
 lval_t* lval_take(lval_t* v, size_t i) {
     lval_t* x = lval_pop(v, i);
-    lval_delete(v);
+    lval_del(v);
     return x;
 }
 
@@ -644,7 +644,7 @@ lval_t* lval_join(lval_t* x, lval_t* y) {
         x = lval_add(x, lval_pop(y, 0));
     }
 
-    lval_delete(y);
+    lval_del(y);
     return x;
 }
 
@@ -722,7 +722,7 @@ Result builtin_op(lenv_t* e, lval_t* a, char* op ) {
 
 finish_op:
     /* consume lval */
-    lval_delete(a);
+    lval_del(a);
 
     return res;
 } /* builtin_op() */
@@ -762,7 +762,7 @@ Result builtin_head(lenv_t* e, lval_t* a) {
         "List passed to 'head' is empty!");
 
     v = lval_take(a, 0);
-    while (v->count > 1) { lval_delete(lval_pop(v, 1)); }
+    while (v->count > 1) { lval_del(lval_pop(v, 1)); }
     
     return Ok(v);
 } /* builtin_head() */
@@ -785,7 +785,7 @@ Result builtin_tail(lenv_t* e, lval_t* a) {
         "Func 'tail' passed empty list!");
 
     v = lval_take(a, 0);
-    lval_delete(lval_pop(v, 0));
+    lval_del(lval_pop(v, 0));
     
     return Ok(v);
 } /* builtin_tail() */
@@ -846,7 +846,7 @@ Result builtin_join(lenv_t* e, lval_t* a) {
         x = lval_join(x, lval_pop(a, 0));
     }
 
-    lval_delete(a);
+    lval_del(a);
     return Ok(x);
 }
 
@@ -883,7 +883,7 @@ Result builtin_var(lenv_t* e, lval_t* a, char* func) {
         }
     }
 
-    lval_delete(a);
+    lval_del(a);
     return Ok(lval_sexpr());
 }
 
@@ -914,7 +914,7 @@ Result builtin_lambda(lenv_t* e, lval_t* a) {
     lval_t* body = lval_pop(a, 0);
 
     /* consume lval */
-    lval_delete(a);
+    lval_del(a);
 
     return Ok(lval_lamda(formals, body));
 }
@@ -924,8 +924,8 @@ void lenv_add_builtin(lenv_t* e, char* name, lbuiltin func) {
     lval_t* k = lval_sym(name);
     lval_t* v = lval_func(func);
     lenv_put(e, k, v);
-    lval_delete(k);
-    lval_delete(v);
+    lval_del(k);
+    lval_del(v);
 }
 
 void lenv_add_builtins(lenv_t* e) {
@@ -955,28 +955,59 @@ Result lval_call(lenv_t* e, lval_t* f, lval_t* a) {
         return f->func.builtin(e, a);
     }
 
-    /* Check # of formals eq # of arguments */
-    LASSERT(a, f->func.formals->count >= a->count,
-        "Lambda passed too many (%d) arguments, maximum: %d.",
-        a->count, f->func.formals->count);
-
-
     /* Process Arguments */
     while (a->count) {
         /* Pop arg name and arg value */
         lval_t* sym = lval_pop(f->func.formals, 0);
         lval_t* val = lval_pop(a, 0);
 
+        /* Check for variable args */
+        if ('&' == *sym->sym) {
+            /* Check only one arg follows the & */
+            if (1 != f->func.formals->count) {
+                lval_del(a);
+                return printErr("Incorrect number of args appear after '&'. Exp: 1, Act: %d",f->func.formals->count);
+            }
+
+            /* bind rest of args to varg list variable */
+            lval_t* nsym = lval_pop(f->func.formals, 0);
+            lenv_put(f->func.env, nsym, builtin_list(e, a).lval);
+            lval_del(sym); lval_del(nsym);
+            break;
+        }
+
         /* Place in local environment */
         lenv_put(f->func.env, sym, val);
 
         /* cleanup */
-        lval_delete(sym);
-        lval_delete(val);
+        lval_del(sym);
+        lval_del(val);
     }
 
     /* Cleanup arg list */
-    lval_delete(a);
+    lval_del(a);
+
+    /* If '&' remains in formal list, bind to empty list */
+    if ( (0 < f->func.formals->count)
+      && (0 == strcmp(f->func.formals->cell[0]->sym, "&")) ) {
+
+        /* Check to ensure that & is not passed invalidly. */
+        if (f->func.formals->count != 2) {
+            return Err("Function format invalid. "
+            "Symbol '&' not followed by single symbol.");
+        }
+
+        /* Pop and delete '&' symbol */
+        lval_del(lval_pop(f->func.formals, 0));
+
+        /* Pop next symbol and create empty list */
+        lval_t* sym = lval_pop(f->func.formals, 0);
+        lval_t* val = lval_qexpr();
+
+        /* Bind to environment and delete */
+        lenv_put(f->func.env, sym, val);
+        lval_del(sym); lval_del(val);
+    }
 
     /* Evaluate if all formals were bound */
     if (0 == f->func.formals->count) {
@@ -1009,7 +1040,7 @@ Result lval_eval(lenv_t* e, lval_t* v) {
     else if (Symbol == v->type) {
         /* Convert from Symbol to Func type */
         Result x = lenv_get(e, v);
-        lval_delete(v);
+        lval_del(v);
         return x;
     }
     else {
@@ -1048,15 +1079,15 @@ Result lval_eval_sexpr(lenv_t* e, lval_t* v) {
     /* Ensure first entry is a function */
     lval_t* f = lval_pop(v, 0);
     if (Func != f->type) {
-        lval_delete(f);
-        lval_delete(v);
+        lval_del(f);
+        lval_del(v);
         return Err("First element is not a function");
     }
 
     /* Call function */
     res = lval_call(e, f, v);
 
-    lval_delete(f);
+    lval_del(f);
     return res;
 } /* lval_eval_sexpr() */
 
@@ -1117,7 +1148,7 @@ int main(void) {
                     err_print(res.err);
                 } else {
                     lval_println(res.lval);
-                    lval_delete(res.lval);
+                    lval_del(res.lval);
                 }
             }
 
