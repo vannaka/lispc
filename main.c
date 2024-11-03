@@ -48,22 +48,23 @@ void add_history(char* unused) {}
 #define LASSERT(args, cond, fmt, ...)               \
     if (!(cond)) {                                  \
         Result res = printErr(fmt, ##__VA_ARGS__);  \
-        lval_del(args);                          \
+        lval_del(args);                             \
         return res;                                 \
     }
 
-#define LASSERT_TYPE(name, args, num, t)                                \
-    LASSERT(a, t == a->cell[(num)]->type,                               \
-        "Function '" name "' passed incorrect type for argument %d. "   \
+#define LASSERT_TYPE(name, a, num, t)                                   \
+    LASSERT(a, (t) == (a)->cell[(num)]->type,                           \
+        "Function '%s' passed incorrect type for argument %d. "         \
         "Got %s, Expected %s.",                                         \
+        (name),                                                         \
         (num),                                                          \
-        str_type(a->cell[(num)]->type),                                 \
-        str_type((t)));
+        str_type((a)->cell[(num)]->type),                               \
+        str_type((t)))
 
 #define LASSERT_NUM(name, a, exp_num)                                   \
     LASSERT(a, (exp_num) == (a)->count,                                 \
-        "Func '" name "' passed too many arguments. Act: %d, Exp: %d",  \
-        (a)->count, (exp_num));
+        "Func '%s' passed too many arguments. Act: %d, Exp: %d",  \
+        (name), (a)->count, (exp_num))
 
 
 /***************************************************************
@@ -76,7 +77,7 @@ typedef struct lenv_t lenv_t;
 
 
 /*------------------------------------------
-Error handling types 
+Error handling types
 ------------------------------------------*/
 enum ResultVariant {
     Result__Ok,
@@ -94,7 +95,7 @@ typedef struct
 
 
 /*------------------------------------------
-lval types 
+lval types
 ------------------------------------------*/
 enum lval_variant {
     Number,
@@ -294,7 +295,7 @@ lval_t* lval_copy(lval_t* v) {
             x->func.formals = lval_copy(v->func.formals);
             x->func.body = lval_copy(v->func.body);
         }
-        
+
         break;
     case Number: x->num = v->num; break;
 
@@ -375,7 +376,7 @@ Result lenv_get(lenv_t* e, lval_t* v) {
 
 /**
  * @brief Add a value for the given key to the given environment.
- * 
+ *
  * @param e Environment
  * @param k Key
  * @param v Value
@@ -398,7 +399,7 @@ void lenv_put(lenv_t* e, lval_t* k, lval_t* v) {
     e->vals[e->count] = lval_copy(v);
     e->syms[e->count] = malloc(strlen(k->sym)+1);
     strcpy(e->syms[e->count], k->sym);
-    
+
     e->count++;
 }
 
@@ -406,7 +407,7 @@ void lenv_put(lenv_t* e, lval_t* k, lval_t* v) {
 /**
  * @brief Add a value for the given key to the global environment of
  *  the given environment.
- * 
+ *
  * @param e Environment
  * @param k Key
  * @param v Value
@@ -443,11 +444,11 @@ Functions to print things
 
 void lval_expr_print(lval_t* v, char l, char r) {
     putchar(l);
-    
+
     for (size_t i = 0; i < v->count; i++) {
         lval_print(v->cell[i]);
 
-        if (i != v->count-1) 
+        if (i != v->count-1)
             putchar(' ');
     }
 
@@ -457,26 +458,26 @@ void lval_expr_print(lval_t* v, char l, char r) {
 
 /**
  * @brief Print S-Expression
- * 
+ *
  * @param sexpr
  */
 void lval_print(lval_t* v) {
     switch (v->type) {
         case Number: printf("%li", v->num); break;
         case Symbol: printf("%s", v->sym); break;
-        case Func: 
+        case Func:
             if (v->func.builtin) {
                 printf("<builtin>");
             }
             else {
-                printf("(\\ "); 
+                printf("(\\ ");
                 lval_print(v->func.formals);
                 putchar(' ');
                 lval_print(v->func.body);
                 printf(" )");
             }
             break;
-        
+
         case SExpression: lval_expr_print(v, '(', ')'); break;
         case QExpression: lval_expr_print(v, '{', '}'); break;
     }
@@ -485,8 +486,8 @@ void lval_print(lval_t* v) {
 
 /**
  * @brief Print S-Expression with a new line.
- * 
- * @param v 
+ *
+ * @param v
  */
 void lval_println(lval_t* v) {
     lval_print(v);
@@ -496,7 +497,7 @@ void lval_println(lval_t* v) {
 
 /**
  * @brief Print an error message and free the string.
- * 
+ *
  * @param e String to print then free.
  */
 void err_print(char* e) {
@@ -519,12 +520,12 @@ Result parse_number(char* str) {
     // NaN
     if (endptr == str) {
         res = printErr("BadNum_NaN: %s", str);
-    } 
+    }
     // Range
-    else if ( (accum == LONG_MAX || accum == LONG_MIN) 
+    else if ( (accum == LONG_MAX || accum == LONG_MIN)
             && (ERANGE == errno                       ) ) {
         res = printErr("BadNum_Range: %s", str);
-    } 
+    }
     // OK
     else {
         res = Ok(lval_num(accum));
@@ -536,8 +537,8 @@ Result parse_number(char* str) {
 
 /**
  * @brief Convert AST structure to S-Expression structure.
- * 
- * @param[in]   a 
+ *
+ * @param[in]   a
  * @return      Result
  */
 Result ast_to_lval(mpc_ast_t* a) {
@@ -558,7 +559,7 @@ Result ast_to_lval(mpc_ast_t* a) {
     if (NULL == strstr(a->tag, ">")) {
         return signaling_error;
     }
-    
+
     if (strstr(a->tag, "qexpr")) {
         lval = lval_qexpr();
     } else {
@@ -594,10 +595,10 @@ Evaluation functions
 
 /**
  * @brief Removes and returns an item from the S-Expression.
- * 
- * @param v 
- * @param i 
- * @return lval_t* 
+ *
+ * @param v
+ * @param i
+ * @return lval_t*
  */
 lval_t* lval_pop(lval_t* v, size_t i) {
     lval_t* x;
@@ -619,10 +620,10 @@ lval_t* lval_pop(lval_t* v, size_t i) {
 /**
  * @brief Removes and returns an item from the S-Expression and
  *  deletes the rest of the S-Expression.
- * 
- * @param v 
- * @param i 
- * @return lval_t* 
+ *
+ * @param v
+ * @param i
+ * @return lval_t*
  */
 lval_t* lval_take(lval_t* v, size_t i) {
     lval_t* x = lval_pop(v, i);
@@ -634,10 +635,10 @@ lval_t* lval_take(lval_t* v, size_t i) {
 /**
  * @brief Takes the children from y and appends them to x, then
  *  deletes y.
- * 
- * @param x 
- * @param y 
- * @return lval_t* 
+ *
+ * @param x
+ * @param y
+ * @return lval_t*
  */
 lval_t* lval_join(lval_t* x, lval_t* y) {
     while (y->count) {
@@ -648,17 +649,49 @@ lval_t* lval_join(lval_t* x, lval_t* y) {
     return x;
 }
 
+bool lval_eq( lval_t* x, lval_t* y) {
+    /* Different types are always unequal */
+    if (x->type != y->type) return false;
+
+    switch (x->type) {
+    /* Compare numbers */
+    case Number: return x->num == y->num;
+
+    /* Compare strings */
+    case Symbol: return strcmp(x->sym, y->sym) == 0;
+
+    /* If Func, compare formals and body */
+    case Func:
+        if (x->func.builtin || y->func.builtin) {
+            return x->func.builtin == y->func.builtin;
+        } else {
+            return lval_eq(x->func.formals, y->func.formals)
+                && lval_eq(x->func.body, y->func.body);
+        }
+
+    case QExpression:
+    case SExpression:
+        if (x->count != y->count ) return false;
+
+        for (size_t i = 0; i < x->count; i++ ) {
+            if (!lval_eq(x->cell[i], y->cell[i])) return false;
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
 
 /**
  * @brief Performs operation on S-Expression and return result. The given
  *  lval_t is consumed.
  *
- * On error Err is returned. 
- * 
- * @param op 
- * @param l 
- * @param r 
- * @return Result 
+ * On error Err is returned.
+ *
+ * @param op '+', '-', '*', '/', etc.
+ * @return Result
  */
 Result builtin_op(lenv_t* e, lval_t* a, char* op ) {
     UNUSED(e);
@@ -673,11 +706,11 @@ Result builtin_op(lenv_t* e, lval_t* a, char* op ) {
         /* Validate operand */
         if (Number != v->type) {
             res = printErr(
-                    "Function '%s' passed incorrect type for argument %d. Act: %s, Exp: %s", 
-                    op, 
-                    str_type(v->type), 
+                    "Function '%s' passed incorrect type for argument %d. Act: %s, Exp: %s",
+                    op,
+                    str_type(v->type),
                     str_type(Number));
-            
+
             goto finish_op;
         }
 
@@ -692,10 +725,10 @@ Result builtin_op(lenv_t* e, lval_t* a, char* op ) {
         }
         else if (strcmp(op, "-") == 0) {
             /* unary negation */
-            if (v->count == 1) 
+            if (v->count == 1)
                 accum = -accum;
             /* normal subtraction */
-            else 
+            else
                 accum -= v->num;
         }
         else if (strcmp(op, "*") == 0) {
@@ -709,7 +742,7 @@ Result builtin_op(lenv_t* e, lval_t* a, char* op ) {
             }
             /* normal division */
             else {
-                accum /= v->num; 
+                accum /= v->num;
             }
         }
         else {
@@ -745,10 +778,200 @@ Result builtin_div(lenv_t* e, lval_t* a) {
 }
 
 
+
+/**
+ * @brief Performs comparison on S-Expression and return result. The given
+ *  lval_t is consumed.
+ *
+ * On error Err is returned.
+ *
+ * @param op
+ * @param l
+ * @param r
+ * @return Result
+ */
+Result builtin_ord(lenv_t* e, lval_t* a, char* op) {
+    UNUSED(e);
+    Result res;
+    bool accum;
+    lval_t *l, *r;
+
+    /* Validate two args and are Numbers */
+    LASSERT_NUM("op", a, 2);
+    LASSERT_TYPE("op", a, 0, Number);
+    LASSERT_TYPE("op", a, 1, Number);
+
+    l = a->cell[0];
+    r = a->cell[1];
+
+    /* Do ordering operation */
+    if (strcmp(op, ">") == 0) {
+        accum = l->num > r->num;
+    }
+    else if (strcmp(op, ">=") == 0) {
+        accum = l->num >= r->num;
+    }
+    else if (strcmp(op, "<") == 0) {
+        accum = l->num < r->num;
+    }
+    else if (strcmp(op, "<=") == 0) {
+        accum = l->num <= r->num;
+    }
+    else {
+        res = printErr("BadOp: %s", op);
+        goto finish_op;
+    }
+
+    /* Return as a number. */
+    res = Ok(lval_num(accum ? 1 : 0));
+
+finish_op:
+    /* consume lval */
+    lval_del(a);
+
+    return res;
+} /* builtin_ord() */
+
+
+Result builtin_gt(lenv_t* e, lval_t* a) {
+  return builtin_ord(e, a, ">");
+}
+
+Result builtin_ge(lenv_t* e, lval_t* a) {
+  return builtin_ord(e, a, ">=");
+}
+
+Result builtin_lt(lenv_t* e, lval_t* a) {
+  return builtin_ord(e, a, "<");
+}
+
+Result builtin_le(lenv_t* e, lval_t* a) {
+  return builtin_ord(e, a, "<=");
+}
+
+
+Result builtin_cmp(lenv_t* e, lval_t* a, char* op) {
+    UNUSED(e);
+    Result res;
+    bool accum;
+    lval_t *l, *r;
+
+    /* Validate two args */
+    LASSERT_NUM("op", a, 2);
+
+    l = a->cell[0];
+    r = a->cell[1];
+
+    if (strcmp(op, "==") == 0) {
+        accum = lval_eq(l, r);
+    }
+    else if (strcmp(op, "!=") == 0) {
+        accum = !lval_eq(l, r);
+    }
+    else {
+        res = printErr("BadOp: %s", op);
+        goto finish_op;
+    }
+
+    /* Return as a number. */
+    res = Ok(lval_num(accum ? 1 : 0));
+
+finish_op:
+    /* consume lval */
+    lval_del(a);
+
+    return res;
+}
+
+Result builtin_eq(lenv_t* e, lval_t* a) {
+    return builtin_cmp(e, a, "==");
+}
+
+Result builtin_ne(lenv_t* e, lval_t* a) {
+    return builtin_cmp(e, a, "!=");
+}
+
+
+Result builtin_logical(lenv_t* e, lval_t* a, char* op) {
+        UNUSED(e);
+    Result res;
+    bool accum;
+    lval_t *l, *r;
+
+    /* Validate two args */
+    LASSERT_NUM("op", a, 2);
+    LASSERT_TYPE("op", a, 0, Number);
+    LASSERT_TYPE("op", a, 1, Number);
+
+    l = a->cell[0];
+    r = a->cell[1];
+
+    if (strcmp(op, "&&") == 0) {
+        accum = l->num && r->num;
+    }
+    else if (strcmp(op, "||") == 0) {
+        accum = l->num || r->num;
+    }
+    else {
+        res = printErr("BadOp: %s", op);
+        goto finish_op;
+    }
+
+    /* Return as a number. */
+    res = Ok(lval_num(accum ? 1 : 0));
+
+finish_op:
+    /* consume lval */
+    lval_del(a);
+
+    return res;
+}
+
+Result builtin_and(lenv_t* e, lval_t* a) {
+    return builtin_logical(e, a, "&&");
+}
+
+Result builtin_or(lenv_t* e, lval_t* a) {
+    return builtin_logical(e, a, "||");
+}
+
+Result builtin_not(lenv_t* e, lval_t* a) {
+    UNUSED(e);
+    LASSERT_NUM("!", a, 1);
+    LASSERT_TYPE("!", a, 0, Number);
+
+    /* Return inverted value */
+    return Ok(lval_num(a->cell[0]->num ? 0 : 1));
+}
+
+Result builtin_if(lenv_t* e, lval_t* a) {
+    LASSERT_NUM("if", a, 3);
+    LASSERT_TYPE("if", a, 0, Number);
+    LASSERT_TYPE("if", a, 1, QExpression);
+    LASSERT_TYPE("if", a, 2, QExpression);
+
+    Result x;
+
+    /* Mark both expressions as evaluatable */
+    a->cell[1]->type = SExpression;
+    a->cell[2]->type = SExpression;
+
+    if (a->cell[0]->num) {
+        /* TRUE */
+        x = lval_eval(e, lval_pop(a, 1));
+    } else {
+        /* FALSE */
+        x = lval_eval(e, lval_pop(a, 2));
+    }
+
+    lval_del(a);
+    return x;
+}
+
 /**
  * @brief Takes a Q-Expression and returns a Q-Expression with
  *  only the first element. Consumes the given lval.
- * 
+ *
  * @param a Argument to 'head'.
  * @return Result
  */
@@ -763,7 +986,7 @@ Result builtin_head(lenv_t* e, lval_t* a) {
 
     v = lval_take(a, 0);
     while (v->count > 1) { lval_del(lval_pop(v, 1)); }
-    
+
     return Ok(v);
 } /* builtin_head() */
 
@@ -771,7 +994,7 @@ Result builtin_head(lenv_t* e, lval_t* a) {
 /**
  * @brief Takes a Q-Expression and returns a Q-Expression with
  *  the first element removed.
- * 
+ *
  * @param a Argument to 'tail'
  * @return Result
  */
@@ -786,16 +1009,16 @@ Result builtin_tail(lenv_t* e, lval_t* a) {
 
     v = lval_take(a, 0);
     lval_del(lval_pop(v, 0));
-    
+
     return Ok(v);
 } /* builtin_tail() */
 
 
 /**
  * @brief Converts a given S-Expression to a Q-Expression
- * 
+ *
  * @param v Argument to 'list'.
- * @return Result 
+ * @return Result
  */
 Result builtin_list(lenv_t* e, lval_t* a) {
     UNUSED(e);
@@ -807,9 +1030,9 @@ Result builtin_list(lenv_t* e, lval_t* a) {
 /**
  * @brief Takes a Q-Expression and evaluates it as if it were
  *  an S-Expression.
- * 
+ *
  * @param a Argument to 'eval'
- * @return Result 
+ * @return Result
  */
 Result builtin_eval(lenv_t* e, lval_t* a) {
     lval_t* v;
@@ -826,7 +1049,7 @@ Result builtin_eval(lenv_t* e, lval_t* a) {
 
 /**
  * @brief Take one or more Q-Expressions and join them together.
- * 
+ *
  * @param a Arguments to 'join'
  * @return Result
  */
@@ -859,7 +1082,7 @@ Result builtin_var(lenv_t* e, lval_t* a, char* func) {
 
     /* Validate all list elements are symbols */
     for (size_t i = 0; i < syms->count; i++) {
-        LASSERT(a, syms->cell[i]->type == Symbol, 
+        LASSERT(a, syms->cell[i]->type == Symbol,
             "Function '%s' cannot define non-symbol. "
             "Act: %s, Exp: %s",
             str_type(syms->cell[i]->type), str_type(Symbol),
@@ -942,6 +1165,19 @@ void lenv_add_builtins(lenv_t* e) {
     lenv_add_builtin(e, "*", builtin_mul);
     lenv_add_builtin(e, "/", builtin_div);
 
+    /* Comparison Functions */
+    lenv_add_builtin(e, "if", builtin_if);
+    lenv_add_builtin(e, "==", builtin_eq);
+    lenv_add_builtin(e, "!=", builtin_ne);
+    lenv_add_builtin(e, ">",  builtin_gt);
+    lenv_add_builtin(e, ">=", builtin_ge);
+    lenv_add_builtin(e, "<",  builtin_lt);
+    lenv_add_builtin(e, "<=", builtin_le);
+    lenv_add_builtin(e, "&&", builtin_and);
+    lenv_add_builtin(e, "||", builtin_or);
+    lenv_add_builtin(e, "!", builtin_not);
+
+
     /* Variable Functions */
     lenv_add_builtin(e, "def", builtin_def);
     lenv_add_builtin(e, "=",   builtin_put);
@@ -1016,10 +1252,10 @@ Result lval_call(lenv_t* e, lval_t* f, lval_t* a) {
 
         /* Evaluate body */
         return builtin_eval(
-                    f->func.env, 
+                    f->func.env,
                     lval_add(lval_sexpr(), lval_copy(f->func.body)));
     }
-    /* Otherwise, return partialy evaluated function */ 
+    /* Otherwise, return partialy evaluated function */
     else {
         return Ok(lval_copy(f));
     }
@@ -1028,9 +1264,9 @@ Result lval_call(lenv_t* e, lval_t* f, lval_t* a) {
 
 /**
  * @brief Evaluate an Expression
- * 
- * @param v 
- * @return Result 
+ *
+ * @param v
+ * @return Result
  */
 
 Result lval_eval(lenv_t* e, lval_t* v) {
@@ -1051,9 +1287,9 @@ Result lval_eval(lenv_t* e, lval_t* v) {
 
 /**
  * @brief Evaluate an S-Expression
- * 
- * @param v 
- * @return Result 
+ *
+ * @param v
+ * @return Result
  */
 Result lval_eval_sexpr(lenv_t* e, lval_t* v) {
     Result res;
@@ -1106,7 +1342,7 @@ int main(void) {
     mpca_lang(MPCA_LANG_DEFAULT,
         "                                                  \
         number : /-?[0-9]+/ ;                              \
-        symbol : /[a-zA-Z0-9_+\\-*\\/\\\\=<>!&]+/ ;        \
+        symbol : /[a-zA-Z0-9_+\\-*\\/\\\\=<>!&|]+/ ;        \
         sexpr  : '(' <expr>* ')' ;                         \
         qexpr  : '{' <expr>* '}' ;                         \
         expr   : <number> | <symbol> | <sexpr> | <qexpr> ; \
@@ -1158,7 +1394,7 @@ int main(void) {
             mpc_err_print(r.error);
             mpc_err_delete(r.error);
         }
-        
+
         /* cleanup input buffer */
         free(input);
     }
